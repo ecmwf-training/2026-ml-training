@@ -1,2 +1,4 @@
 # 2026-ml-training
-Training materials for practical sessions in the Machine Learning  course in Reading, 16-20 Nov 2026
+This repo contains code examples and resources for ECMWF's [Machine Learning-based Weather Forecasting]([url](https://events.ecmwf.int/event/546/)) training course running from 16 to 20 November 2026. 
+
+This repo is currently under construction...
