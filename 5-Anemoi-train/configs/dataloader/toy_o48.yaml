@@ -1,0 +1,68 @@
+# Reads the training-course toy dataset (its path is set in system.input.dataset).
+# Train on 2010-2020, validate on 2021, test on 2022.
+prefetch_factor: 2
+pin_memory: True
+
+# Number of GPUs of one model instance that read the data together; 1 = every GPU reads its own data.
+read_group_size: ${system.hardware.num_gpus_per_model}
+
+num_workers:
+  training: 4
+  validation: 4
+  test: 4
+batch_size:
+  training: 2
+  validation: 2
+  test: 2
+
+# Use only N batches per epoch (null = all of them). A full epoch of 2010-2020 is ~8,000 steps; with
+# 100, the model is validated, plotted and checkpointed every 100 steps (at the end of each 'epoch').
+limit_batches:
+  training: 100
+  validation: 8
+  test: 8
+
+grid_indices:
+  datasets:
+    data: # user-defined name for the dataset
+      _target_: anemoi.training.data.grid_indices.FullGrid
+      nodes_name: ${graph.data}
+
+# The dataset, opened with anemoi-datasets (https://anemoi-datasets.readthedocs.io).
+# Anything anemoi-datasets' open_dataset accepts works here, e.g. {dataset: ..., select: [...]}
+dataset: ${system.input.dataset}
+
+model_run_info: null  # only needed for training on forecasts instead of analyses
+
+training:
+  datasets:
+    data:
+      dataset: ${dataloader.dataset}
+      start: null
+      end: 2020
+      frequency: ${data.frequency}
+      drop: []
+      trajectory: ${dataloader.model_run_info}
+
+# number of autoregressive steps in validation, must be >= the rollout expected by callbacks
+validation_rollout: 1
+
+validation:
+  datasets:
+    data:
+      dataset: ${dataloader.dataset}
+      start: 2021
+      end: 2021
+      frequency: ${data.frequency}
+      drop: []
+      trajectory: ${dataloader.model_run_info}
+
+test:
+  datasets:
+    data:
+      dataset: ${dataloader.dataset}
+      start: 2022
+      end: null
+      frequency: ${data.frequency}
+      drop: []
+      trajectory: ${dataloader.model_run_info}

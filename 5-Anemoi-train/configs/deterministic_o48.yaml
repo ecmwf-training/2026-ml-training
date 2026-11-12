@@ -1,0 +1,111 @@
+# Deterministic AIFS-style model on the O48 toy dataset (hands-on session 1).
+# Same data, graph and model size as crps_o48.yaml, so the two trainings can be compared.
+#
+#   anemoi-training train --config-path=$PWD/configs --config-name=deterministic_o48
+#
+# The defaults list picks one file from each config group (sub-folder of configs/).
+# Everything below it overrides values from those files.
+defaults:
+- data: toy               # which variables are forcings / diagnostics, normalisation
+- dataloader: toy_o48     # train / validation / test periods, batch size
+- diagnostics: evaluation # plots, checkpoints, logging
+- system: course          # paths and hardware
+- graph: multi_scale      # data nodes, hidden mesh and the edges between them
+- model: graphtransformer # encoder - processor - decoder
+- training: default       # loss, optimiser, learning rate, number of steps
+- _self_
+
+config_validation: True
+
+data:
+  resolution: o48
+
+# The O48 grid has 10,944 points. A refined icosahedron of resolution 4 gives 2,562 hidden nodes.
+graph:
+  nodes:
+    hidden:
+      node_builder:
+        resolution: 4
+
+# Smaller than the operational AIFS (1024 channels, 16 layers)
+model:
+  num_channels: 256
+  processor:
+    num_layers: 8
+
+training:
+  # input: the states at t-6h and t; output: the state at t+6h
+  multistep_input: 2
+  rollout:
+    start: 1
+    epoch_increment: 0
+    max: 1
+
+  max_steps: 1000
+  max_epochs: null
+  num_sanity_val_steps: 1
+
+  # One GPU, so this is also the effective learning rate. The O48 pretraining used 1.25e-4 per GPU
+  # on 4 GPUs: the same effective rate, but with a 4x larger effective batch (8 instead of 2).
+  lr:
+    rate: 5.0e-4
+    warmup: 100
+    iterations: ${training.max_steps}
+    min: 3.0e-7
+
+  # Relative weight of each variable in the loss
+  scalers:
+    datasets:
+      data:
+        general_variable:
+          weights:
+            default: 1
+            t: 3
+            z: 3
+            tp: 0.025
+            cp: 0.0025
+
+  variable_groups:
+    datasets:
+      data:
+        default: sfc
+        pl:
+          param: [t, z]
+
+  # Validation metrics are also logged for each of these variables
+  metrics:
+    datasets:
+      data: [z_500, t_850, 2t]
+
+diagnostics:
+  plot:
+    parameters: [z_500, t_850, 2t, tp]
+    frequency:
+      batch: ${dataloader.limit_batches.validation} # last validation batch of each validation run
+      epoch: 1
+    callbacks:
+    - _target_: anemoi.training.diagnostics.callbacks.plot.PlotSample
+      dataset_names: ["data"]
+      sample_idx: ${diagnostics.plot.sample_idx}
+      per_sample: 6
+      parameters: ${diagnostics.plot.parameters}
+      every_n_batches: ${diagnostics.plot.frequency.batch}
+      accumulation_levels_plot: [0, 0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 7, 100] # in mm
+      precip_and_related_fields: ${diagnostics.plot.precip_and_related_fields}
+      colormaps: ${diagnostics.plot.colormaps}
+  # Keep only the newest epoch checkpoint (plus last.ckpt and inference-last.ckpt) to save disk space
+  checkpoint:
+    every_n_epochs:
+      save_frequency: 1
+      num_models_saved: 1
+    every_n_minutes:
+      save_frequency: null
+      num_models_saved: 0
+  log:
+    interval: 10
+    mlflow:
+      enabled: True
+      offline: True # log to files in system.output.root/logs/mlflow, no server needed
+      tracking_uri: ${system.output.logs.mlflow}
+      experiment_name: training-course
+      run_name: deterministic-o48
