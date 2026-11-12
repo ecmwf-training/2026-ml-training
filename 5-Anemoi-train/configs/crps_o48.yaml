@@ -1,0 +1,140 @@
+# Ensemble (AIFS-CRPS / AIFS-ENS style) model on the O48 toy dataset (hands-on session 2).
+# The course version of the pretraining stage of the O48 AIFS-CRPS model used in the inference session
+# (anemoi-configs: training-course-crps-o48-6h-pretrain.yaml), with fewer steps and a single GPU.
+#
+#   anemoi-training train --config-path=$PWD/configs --config-name=crps_o48
+#
+# Compared with deterministic_o48.yaml, only three lines of the defaults list change
+# (model, training and diagnostics), plus the ensemble size and the loss below.
+defaults:
+- data: toy
+- dataloader: toy_o48
+- diagnostics: evaluation_ens   # ensemble plots
+- system: course
+- graph: multi_scale
+- model: graphtransformer_ens   # AnemoiEnsModelEncProcDec: noise injector + conditional layer norm
+- training: ensemble            # GraphEnsForecaster task, DDPEnsGroupStrategy, CRPS loss
+- _self_
+
+config_validation: True
+
+data:
+  resolution: o48
+
+graph:
+  nodes:
+    hidden:
+      node_builder:
+        resolution: 4
+
+model:
+  num_channels: 256
+  processor:
+    num_layers: 8
+
+training:
+  multistep_input: 2
+  rollout:
+    start: 1
+    epoch_increment: 0
+    max: 1
+
+  max_steps: 1000
+  max_epochs: null
+  num_sanity_val_steps: 1
+
+  # Members per GPU. Ensemble size = ensemble_size_per_device * num_gpus_per_ensemble.
+  ensemble_size_per_device: 2
+
+  # One GPU, so this is also the effective learning rate. The O48 pretraining used 1.25e-4 per GPU
+  # on 4 GPUs: the same effective rate, but with a 4x larger effective batch (8 instead of 2).
+  lr:
+    rate: 5.0e-4
+    warmup: 100
+    iterations: ${training.max_steps}
+    min: 1.0e-7
+
+  scalers:
+    datasets:
+      data:
+        general_variable:
+          weights:
+            default: 1
+            t: 3
+            z: 3
+            tp: 0.025
+            cp: 0.0025
+
+  variable_groups:
+    datasets:
+      data:
+        default: sfc
+        pl:
+          param: [t, z]
+
+  metrics:
+    datasets:
+      data: [z_500, t_850, 2t]
+
+  training_loss:
+    datasets:
+      data:
+        # The CRPS is evaluated on 3 smoothed versions of the fields plus the full-resolution field.
+        # The smoothing matrices are pre-computed (Gaussian, sigma = 4x/2x/1x the grid spacing).
+        _target_: anemoi.training.losses.MultiscaleLossWrapper
+        loss_matrices_path: ${system.input.loss_matrices_path}
+        loss_matrices:
+          - filter_${data.resolution}_w=gaussian_d=4.0x.npz
+          - filter_${data.resolution}_w=gaussian_d=2.0x.npz
+          - filter_${data.resolution}_w=gaussian_d=1.0x.npz
+          - null # no smoothing
+        weights: [1.0, 1.0, 1.0, 4.0]
+        keep_batch_sharded: ${model.keep_batch_sharded}
+        per_scale_loss:
+          _target_: anemoi.training.losses.kcrps.AlmostFairKernelCRPS
+          scalers: ['pressure_level', 'general_variable', 'nan_mask_weights', 'node_weights']
+          ignore_nans: False
+          no_autocast: True
+          alpha: 1.0 # 1 = fair CRPS, 0 = standard CRPS
+
+  validation_metrics:
+    datasets:
+      data:
+        fkcrps:
+          _target_: anemoi.training.losses.kcrps.AlmostFairKernelCRPS
+          scalers: ['node_weights']
+          ignore_nans: False
+          alpha: 1.0
+
+diagnostics:
+  callbacks: []
+  plot:
+    parameters: [z_500, t_850, 2t, tp]
+    frequency:
+      batch: ${dataloader.limit_batches.validation}
+      epoch: 1
+    callbacks:
+    - _target_: anemoi.training.diagnostics.callbacks.plot_ens.PlotEnsSample
+      dataset_names: ["data"]
+      sample_idx: ${diagnostics.plot.sample_idx}
+      per_sample: 2
+      parameters: ${diagnostics.plot.parameters}
+      every_n_batches: ${diagnostics.plot.frequency.batch}
+      accumulation_levels_plot: [0, 0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 7, 100] # in mm
+      members: null # all members
+  # Keep only the newest epoch checkpoint (plus last.ckpt and inference-last.ckpt) to save disk space
+  checkpoint:
+    every_n_epochs:
+      save_frequency: 1
+      num_models_saved: 1
+    every_n_minutes:
+      save_frequency: null
+      num_models_saved: 0
+  log:
+    interval: 10
+    mlflow:
+      enabled: True
+      offline: True
+      tracking_uri: ${system.output.logs.mlflow}
+      experiment_name: training-course
+      run_name: crps-o48

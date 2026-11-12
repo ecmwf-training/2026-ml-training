@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Cached initial conditions written by the 3-run-AIFS notebooks
+inputstate-*.npz
+
+# Hydra run folders written by anemoi-training (5-Anemoi-train)
+outputs/
