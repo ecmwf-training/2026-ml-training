@@ -96,7 +96,7 @@ eccodeslib==2.43.0
 eckitlib==1.31.4
 ecmwf-api-client==1.6.5
 ecmwf-datastores-client==0.4.0
-ecmwf-opendata==0.3.35
+ecmwf-opendata==0.3.22
 einops==0.8.1
 entrypoints==0.4
 execnet==2.1.2
