@@ -1,10 +1,9 @@
 import datetime
 import logging
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 
-import earthkit.data as ekd
-import earthkit.regrid as ekr
 import numpy as np
 import pandas as pd
 import torch
@@ -66,17 +65,36 @@ def load_state(file):
 def save_state(state, outfile):
     np.savez(outfile, **state["fields"], longitudes = state["longitudes"], latitudes = state["latitudes"])
 
+def open_data_client(source: str = "ecmwf"):
+    """ECMWF Open Data client. `source="aws"` reads the archive of past dates."""
+    # Imported here, as it is only needed to download data (loading packages from Lustre is slow)
+    from ecmwf.opendata import Client
+
+    # The 06 and 18 UTC runs moved from stream "scda" to "oper", but ecmwf-opendata 0.3.22 still requests
+    # "scda" for them unless `infer_stream_keyword=False`
+    return Client(source=source, model="ifs", preserve_request_order=True, infer_stream_keyword=False)
+
+
+def latest_date() -> datetime.datetime:
+    """Date of the latest forecast available on ECMWF Open Data."""
+    return open_data_client().latest()
+
+
 def get_open_data(param, date, resolution: str, levelist=[], source: str | None = None) -> dict:
+    # Imported here, as they are only needed to download data (loading packages from Lustre is slow)
+    import earthkit.data as ekd
+    import earthkit.regrid as ekr
+
+    # `source` is only needed for past dates (e.g. "aws"): the default server only keeps the latest days
+    client = open_data_client(source or "ecmwf")
     fields = defaultdict(list)
     # Get the data for the current date and the previous date
     for date in [date - datetime.timedelta(hours=6), date]:
         # Without `levtype`, "z" would also match geopotential on pressure levels
         levtype = "pl" if levelist else "sfc"
-        # `source` is only needed for past dates (e.g. "aws"): the default server only keeps the latest days
-        kwargs = {} if source is None else {"source": source}
-        data = ekd.from_source(
-            "ecmwf-open-data", date=date, param=param, levtype=levtype, levelist=levelist, **kwargs
-        )
+        target = Path(tempfile.gettempdir()) / f"opendata-{date:%Y%m%d%H}-{levtype}-{'-'.join(param)}.grib2"
+        client.retrieve(date=date, step=0, param=param, levtype=levtype, levelist=levelist, target=str(target))
+        data = ekd.from_source("file", str(target))
         for f in data:
             # Open data is between -180 and 180, we need to shift it to 0-360
             assert f.to_numpy().shape == (721, 1440)
@@ -130,7 +148,7 @@ def load_input_state(date, resolution: str = GRID_RESOLUTION, source: str | None
     """Load the input state (2 time steps: date-6h and date) from ECMWF open data.
 
     The state is saved to a local file the first time, and reloaded from it afterwards.
-    For dates older than a few days, use `source="aws"` (or "azure", "google") to read the open data archive.
+    For dates older than a few days, use `source="aws"` to read the open data archive.
     """
     file = Path(f"inputstate-{resolution}-{date.strftime('%Y%m%d_%H')}.npz")
     if file.exists():

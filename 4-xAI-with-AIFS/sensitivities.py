@@ -59,7 +59,9 @@ class SensitivitiesRunner(SimpleRunner):
             Keyword arguments passed to the `SimpleRunner` (e.g. `device`, `precision`, `patch_metadata`).
         """
         super().__init__(checkpoint, **kwargs)
-        assert len(self.dataset_names) == 1, "Only single-dataset checkpoints are supported."
+        # anemoi-inference 0.9.0 runs a single dataset, but models from anemoi-models >= 0.12 take and
+        # return a dictionary {dataset_name: tensor}, which `wrap_model` relies on.
+        assert self.checkpoint._metadata.multi_dataset, "Only checkpoints of anemoi-models >= 0.12 are supported."
         self.return_unnormalised_sensitivities = return_unnormalised_sensitivities
         self.perturb_normalised_space = perturb_normalised_space
         self.noise_seed = seed
@@ -71,7 +73,7 @@ class SensitivitiesRunner(SimpleRunner):
     @property
     def dataset_name(self) -> str:
         """Name of the (single) dataset of the checkpoint."""
-        return self.dataset_names[0]
+        return self.checkpoint.name
 
     def _allow_unsharded_input(self, model: torch.nn.Module) -> None:
         """Work around a bug in anemoi-models 0.12.0 for ensemble models.
@@ -180,43 +182,39 @@ class SensitivitiesRunner(SimpleRunner):
     def forecast(
         self,
         lead_time: str,
-        input_tensors_numpy: dict[str, FloatArray],
-        input_states: dict[str, State],
-    ) -> Generator[dict[str, State], None, None]:
+        input_tensor_numpy: FloatArray,
+        input_state: State,
+    ) -> Generator[State, None, None]:
         """Compute the sensitivities.
 
         Parameters
         ----------
         lead_time : str
             The lead time. Only one model step is supported.
-        input_tensors_numpy : dict[str, FloatArray]
-            The input tensor of each dataset, with shape (multi_step_input, variables, values).
-        input_states : dict[str, State]
-            The input state of each dataset.
+        input_tensor_numpy : FloatArray
+            The input tensor, with shape (multi_step_input, variables, values).
+        input_state : State
+            The input state.
 
         Yields
         ------
-        dict[str, State]
-            The state of each dataset, whose fields are the sensitivities (time, values) with respect to
-            each input variable.
+        State
+            The state whose fields are the sensitivities (time, values) with respect to each input variable.
         """
-        name = self.dataset_name
-        handler = self.tensor_handlers[name]
-        input_state = input_states[name]
         start = input_state["date"]
 
         lead_time = to_timedelta(lead_time)
         n_steps = len(list(self.forecast_stepper(start, lead_time)))
         if n_steps != 1:
             raise ValueError(
-                f"Sensitivities are only supported for one model step ({self.checkpoint.rollout_shift}), "
+                f"Sensitivities are only supported for one model step ({self.checkpoint.timestep}), "
                 f"got lead_time={lead_time}."
             )
 
         self.model.eval()
 
         # Create pytorch input tensor: (batch, time, values, variables)
-        input_tensor_torch = torch.from_numpy(np.swapaxes(input_tensors_numpy[name], -2, -1)[np.newaxis, ...]).to(
+        input_tensor_torch = torch.from_numpy(np.swapaxes(input_tensor_numpy, -2, -1)[np.newaxis, ...]).to(
             self.device
         )
 
@@ -228,22 +226,22 @@ class SensitivitiesRunner(SimpleRunner):
         new_state["fields"] = dict()
         new_state["step"] = to_timedelta(0)
 
-        for s, (step, dates, _, _) in enumerate(self.forecast_stepper(start, lead_time)):
-            with Timer(f"Computing sensitivities for {dates[-1]}"):
+        for s, (step, date, _, _) in enumerate(self.forecast_stepper(start, lead_time)):
+            with Timer(f"Computing sensitivities for {date}"):
                 y_pred = self.sensitivities_step(self.model, input_tensor_torch, perturbation=output_perturbation)
 
-            new_state["date"] = dates[-1]
+            new_state["date"] = date
             new_state["previous_step"] = new_state["step"]
             new_state["step"] = step
 
             # Update state
             for i in range(y_pred.shape[-1]):
-                new_state["fields"][handler.metadata.input_tensor_index_to_variable[i]] = y_pred[:, :, i]
+                new_state["fields"][self.checkpoint.input_tensor_index_to_variable[i]] = y_pred[:, :, i]
 
             if self.verbosity > 0:
-                handler._print_input_tensor("Sensitivities tensor", y_pred)
+                self._print_input_tensor("Sensitivities tensor", y_pred[None])
 
-            yield {name: new_state}
+            yield new_state
 
     def run(
         self,
@@ -274,6 +272,6 @@ class SensitivitiesRunner(SimpleRunner):
         """
         self.perturbation = perturbation
         try:
-            yield from super().run(input_states=input_state, lead_time=lead_time, return_numpy=return_numpy)
+            yield from super().run(input_state=input_state, lead_time=lead_time, return_numpy=return_numpy)
         finally:
             self.perturbation = None

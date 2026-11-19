@@ -37,12 +37,8 @@ class Perturbation(ABC):
         patch_metadata : dict, optional
             Patch to apply to the metadata of the checkpoint.
         """
-        self._checkpoint = Checkpoint(checkpoint, patch_metadata=patch_metadata)
-
-        # Only checkpoints with a single dataset are supported
-        multi_metadata = self._checkpoint.multi_dataset_metadata
-        assert len(multi_metadata) == 1, f"Only single-dataset checkpoints are supported, got {list(multi_metadata)}"
-        self._metadata = next(iter(multi_metadata.values()))
+        # anemoi-inference 0.9.0 reads the metadata of the (single) dataset of the checkpoint
+        self._metadata = Checkpoint(checkpoint, patch_metadata=patch_metadata)
 
     @property
     def number_of_grid_points(self) -> int:
