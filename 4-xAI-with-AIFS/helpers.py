@@ -92,7 +92,7 @@ def get_open_data(param, date, resolution: str, levelist=[], source: str | None 
     for date in [date - datetime.timedelta(hours=6), date]:
         # Without `levtype`, "z" would also match geopotential on pressure levels
         levtype = "pl" if levelist else "sfc"
-        target = Path('.' / f"opendata-{date:%Y%m%d%H}-{levtype}-{'-'.join(param)}.grib2"
+        target = Path('.') / f"opendata-{date:%Y%m%d%H}-{levtype}-{'-'.join(param)}.grib2"
         client.retrieve(date=date, step=0, param=param, levtype=levtype, levelist=levelist, target=str(target))
         data = ekd.from_source("file", str(target))
         for f in data:
