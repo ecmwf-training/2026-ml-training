@@ -1,0 +1,132 @@
+# Short profiling runs of a deterministic AIFS-style model on the O48 toy dataset.
+# This config is the same model as ../../5-Anemoi-train/configs/deterministic_o48.yaml,
+# but each run is short and does not save checkpoints, plots or MLflow logs.
+#
+#   anemoi-training profile --config-path=$PWD/configs --config-name=profiling_o48
+#
+# The notebook perf_profiling_short.ipynb changes some of these settings with overrides.
+defaults:
+- data: toy               # which variables are forcings / diagnostics, normalisation
+- dataloader: toy_o48     # train / validation / test periods, batch size
+- diagnostics: evaluation # plots, checkpoints, logging, benchmark profiler
+- system: course          # paths and hardware
+- graph: multi_scale      # data nodes, hidden mesh and the edges between them
+- model: graphtransformer # encoder - processor - decoder
+- training: default       # loss, optimiser, learning rate, number of steps
+- _self_
+
+config_validation: True
+
+data:
+  resolution: o48
+
+# The O48 grid has 10,944 points. A refined icosahedron of resolution 4 gives 2,562 hidden nodes.
+graph:
+  overwrite: False # make the graph one time, then load it from system.input.graph
+  nodes:
+    hidden:
+      node_builder:
+        resolution: 4
+
+system:
+  input:
+    # all runs use the same graph file, thus only the first run makes the graph
+    graph: ${oc.env:HOME}/anemoi-output/profiling/graphs/graph_${data.resolution}.pt
+    loss_matrices_path: null
+  output:
+    # the notebook sets a different folder for each run
+    root: ${oc.env:HOME}/anemoi-output/profiling/default/
+
+# The same model as in the training session, but with 512 channels instead of 256 and a batch of 16 samples
+# instead of 2, so that the GPU (not the CPU) sets the speed. Tuned for an A100 with 20 GB that two students share:
+# the peak is approximately 5 GB reserved with Triton and 8.5 GB with PyG.
+model:
+  num_channels: 512
+  processor:
+    num_layers: 8
+  compile: [] # no torch.compile: the first steps are not slower, and the comparisons are clear
+  # mapper chunks. The notebook changes these values.
+  encoder:
+    num_chunks: 4
+  decoder:
+    num_chunks: 4
+
+dataloader:
+  batch_size:
+    training: 16
+    validation: 2
+  num_workers:
+    training: 8
+    validation: 2
+  limit_batches:
+    training: 50
+    validation: 2
+
+training:
+  multistep_input: 2
+  rollout:
+    start: 1
+    epoch_increment: 0
+    max: 1
+  max_steps: 50
+  max_epochs: 1
+  num_sanity_val_steps: 0
+  lr:
+    rate: 5.0e-4
+    warmup: 10
+    iterations: ${training.max_steps}
+    min: 3.0e-7
+  scalers:
+    datasets:
+      data:
+        general_variable:
+          weights:
+            default: 1
+            t: 3
+            z: 3
+            tp: 0.025
+            cp: 0.0025
+  variable_groups:
+    datasets:
+      data:
+        default: sfc
+        pl:
+          param: [t, z]
+  metrics:
+    datasets:
+      data: [z_500, t_850, 2t]
+
+diagnostics:
+  callbacks: []
+  plot:
+    callbacks: []
+  enable_checkpointing: False
+  print_memory_summary: False # the notebook sets this to True in section 4
+  log:
+    interval: 10
+    mlflow:
+      enabled: False
+  benchmark_profiler:
+    # PyTorch profiler trace (*.pt.trace.json): open it in https://ui.perfetto.dev
+    memory:
+      enabled: True
+      steps: 2
+      warmup: 4
+      extra_plots: False
+      trace_rank0_only: False
+    # memory snapshot (memory_snapshot.pickle): open it in https://pytorch.org/memory_viz
+    # steps and warmup are training steps, but they must be multiples of dataloader.batch_size.training.
+    # Thus, the snapshot records steps 16 to 31.
+    snapshot:
+      enabled: True
+      steps: 16
+      warmup: 16
+    time:
+      enabled: True
+      verbose: False
+    speed:
+      enabled: True
+    system:
+      enabled: False
+    model_summary:
+      enabled: False
