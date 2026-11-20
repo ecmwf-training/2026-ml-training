@@ -41,7 +41,11 @@ def load_config(config_name=CONFIG_NAME, overrides=()):
 # With num_workers=0, the PyTorch DataLoader stops with a ValueError if prefetch_factor is not None,
 # or if persistent_workers is True. The anemoi config schema accepts only an integer for prefetch_factor,
 # thus you cannot set it to null in the config.
-# The launcher changes the DataLoader: if num_workers is 0, it sets prefetch_factor=None and persistent_workers=False.
+# Also, anemoi prepares its dataset in worker_init_fn (per_worker_init() sets self.rng and the sample range).
+# With num_workers=0, no worker process starts, thus worker_init_fn does not run,
+# and the data loader stops with "'MultiDataset' object has no attribute 'rng'".
+# The launcher changes the DataLoader. If num_workers is 0, it sets prefetch_factor=None and persistent_workers=False,
+# and it calls per_worker_init(n_workers=1, worker_id=0) on the dataset one time, in the main process.
 # If num_workers is more than 0, the DataLoader does not change.
 #
 # Fix 2 (empty memory report, `profile` only):
@@ -54,8 +58,10 @@ def load_config(config_name=CONFIG_NAME, overrides=()):
 # We do not change the anemoi-training code.
 _PROFILE_LAUNCHER = """
 import inspect
+import random
 import sys
 import pandas as pd
+import torch
 import torch.utils.data
 
 _dataloader_init = torch.utils.data.DataLoader.__init__
@@ -66,6 +72,14 @@ def dataloader_init(self, *args, **kwargs):
     if bound.arguments.get("num_workers", 0) == 0:
         bound.arguments["prefetch_factor"] = None
         bound.arguments["persistent_workers"] = False
+        # No worker process starts, thus worker_init_fn does not run. Do its work here, in this process.
+        # per_worker_init() sets the random seeds. Keep the random state of this process as it was.
+        dataset = bound.arguments["dataset"]
+        if hasattr(dataset, "per_worker_init"):
+            python_state = random.getstate()
+            with torch.random.fork_rng(devices=[]):
+                dataset.per_worker_init(n_workers=1, worker_id=0)
+            random.setstate(python_state)
     _dataloader_init(*bound.args, **bound.kwargs)
 
 torch.utils.data.DataLoader.__init__ = dataloader_init
