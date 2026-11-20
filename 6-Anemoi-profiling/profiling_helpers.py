@@ -35,55 +35,16 @@ def load_config(config_name=CONFIG_NAME, overrides=()):
     return config
 
 
-# A launcher for `anemoi-training`. It is the same as the `anemoi-training` command, with two fixes.
-#
-# Fix 1 (data loader with 0 workers):
-# With num_workers=0, the PyTorch DataLoader stops with a ValueError if prefetch_factor is not None,
-# or if persistent_workers is True. The anemoi config schema accepts only an integer for prefetch_factor,
-# thus you cannot set it to null in the config.
-# Also, anemoi prepares its dataset in worker_init_fn (per_worker_init() sets self.rng and the sample range).
-# With num_workers=0, no worker process starts, thus worker_init_fn does not run,
-# and the data loader stops with "'MultiDataset' object has no attribute 'rng'".
-# The launcher changes the DataLoader. If num_workers is 0, it sets prefetch_factor=None and persistent_workers=False,
-# and it calls per_worker_init(n_workers=1, worker_id=0) on the dataset one time, in the main process.
-# If num_workers is more than 0, the DataLoader does not change.
-#
-# Fix 2 (empty memory report, `profile` only):
+# A launcher for `anemoi-training profile`. It is the same as the `anemoi-training` command, with one fix.
 # If the memory profiler records no events, get_memory_profiler_df() returns "" and not a DataFrame.
 # Then the report stops the run with "'str' object has no attribute 'to_markdown'".
 # This occurs after the training and after the profiler writes its files.
 # The launcher replaces get_memory_profiler_df() with a version that always returns a DataFrame.
-#
-# The run occurs in a different process, thus we must do the replacements in that process.
+# The run occurs in a different process, thus we must do the replacement in that process.
 # We do not change the anemoi-training code.
 _PROFILE_LAUNCHER = """
-import inspect
-import random
 import sys
 import pandas as pd
-import torch
-import torch.utils.data
-
-_dataloader_init = torch.utils.data.DataLoader.__init__
-_dataloader_signature = inspect.signature(_dataloader_init)
-
-def dataloader_init(self, *args, **kwargs):
-    bound = _dataloader_signature.bind(self, *args, **kwargs)
-    if bound.arguments.get("num_workers", 0) == 0:
-        bound.arguments["prefetch_factor"] = None
-        bound.arguments["persistent_workers"] = False
-        # No worker process starts, thus worker_init_fn does not run. Do its work here, in this process.
-        # per_worker_init() sets the random seeds. Keep the random state of this process as it was.
-        dataset = bound.arguments["dataset"]
-        if hasattr(dataset, "per_worker_init"):
-            python_state = random.getstate()
-            with torch.random.fork_rng(devices=[]):
-                dataset.per_worker_init(n_workers=1, worker_id=0)
-            random.setstate(python_state)
-    _dataloader_init(*bound.args, **bound.kwargs)
-
-torch.utils.data.DataLoader.__init__ = dataloader_init
-
 from anemoi.training.diagnostics.profilers import BenchmarkProfiler
 
 _get_memory_profiler_df = BenchmarkProfiler.get_memory_profiler_df
@@ -121,9 +82,9 @@ def run_anemoi(command, overrides=(), config_name=CONFIG_NAME, seed=42, cwd=WORK
     executable = Path(sys.executable).parent / "anemoi-training"  # the one of the environment of this notebook
     cmd = [str(executable), command, f"--config-path={CONFIG_DIR}", f"--config-name={config_name}", *overrides]
     print(" ".join(cmd[1:]), flush=True)
-    # Use the launcher above. It is the same command, but num_workers=0 is permitted,
-    # and an empty memory report does not stop the run.
-    cmd = [sys.executable, "-c", _PROFILE_LAUNCHER, *cmd[1:]]
+    if command == "profile":
+        # Use the launcher above. It is the same command, but an empty memory report does not stop the run.
+        cmd = [sys.executable, "-c", _PROFILE_LAUNCHER, *cmd[1:]]
     env = {**os.environ, "ANEMOI_BASE_SEED": str(seed), "PYTHONWARNINGS": "ignore"}
     # Read raw bytes. Then the carriage returns of the progress bar update it in place, and do not add lines.
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
