@@ -35,6 +35,35 @@ def load_config(config_name=CONFIG_NAME, overrides=()):
     return config
 
 
+# A launcher for `anemoi-training profile`. It is the same as the `anemoi-training` command, with one fix.
+# If the memory profiler records no events, get_memory_profiler_df() returns "" and not a DataFrame.
+# Then the report stops the run with "'str' object has no attribute 'to_markdown'".
+# This occurs after the training and after the profiler writes its files.
+# The launcher replaces get_memory_profiler_df() with a version that always returns a DataFrame.
+# The run occurs in a different process, thus we must do the replacement in that process.
+# We do not change the anemoi-training code.
+_PROFILE_LAUNCHER = """
+import sys
+import pandas as pd
+from anemoi.training.diagnostics.profilers import BenchmarkProfiler
+
+_get_memory_profiler_df = BenchmarkProfiler.get_memory_profiler_df
+
+def get_memory_profiler_df(self):
+    memory_df = _get_memory_profiler_df(self)
+    if isinstance(memory_df, pd.DataFrame):
+        return memory_df
+    print("Memory Profiling: the profiler recorded no events. The memory report is empty.", flush=True)
+    return pd.DataFrame()
+
+BenchmarkProfiler.get_memory_profiler_df = get_memory_profiler_df
+
+from anemoi.training.__main__ import main
+sys.argv = ["anemoi-training", *sys.argv[1:]]
+main()
+"""
+
+
 def run_anemoi(command, overrides=(), config_name=CONFIG_NAME, seed=42, cwd=WORKSHOP_DIR):
     """Run `anemoi-training <command>` from this folder and show its output in the notebook.
 
@@ -53,6 +82,9 @@ def run_anemoi(command, overrides=(), config_name=CONFIG_NAME, seed=42, cwd=WORK
     executable = Path(sys.executable).parent / "anemoi-training"  # the one of the environment of this notebook
     cmd = [str(executable), command, f"--config-path={CONFIG_DIR}", f"--config-name={config_name}", *overrides]
     print(" ".join(cmd[1:]), flush=True)
+    if command == "profile":
+        # Use the launcher above. It is the same command, but an empty memory report does not stop the run.
+        cmd = [sys.executable, "-c", _PROFILE_LAUNCHER, *cmd[1:]]
     env = {**os.environ, "ANEMOI_BASE_SEED": str(seed), "PYTHONWARNINGS": "ignore"}
     # Read raw bytes. Then the carriage returns of the progress bar update it in place, and do not add lines.
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
